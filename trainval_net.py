@@ -58,7 +58,7 @@ def parse_args():
                       default=10000, type=int)
 
   parser.add_argument('--save_dir', dest='save_dir',
-                      help='directory to save models', default="/srv/share/jyang375/models",
+                      help='directory to save models', default="/home/csc302/workspace/liuhy/faster-rcnn.pytorch/models",
                       nargs=argparse.REMAINDER)
   parser.add_argument('--nw', dest='num_workers',
                       help='number of worker to load data',
@@ -205,6 +205,7 @@ if __name__ == '__main__':
   print('{:d} roidb entries'.format(len(roidb)))
 
   output_dir = args.save_dir + "/" + args.net + "/" + args.dataset
+  print(output_dir)
   if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
