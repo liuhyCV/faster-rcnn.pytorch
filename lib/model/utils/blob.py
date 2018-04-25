@@ -32,6 +32,19 @@ def im_list_to_blob(ims):
 
     return blob
 
+def seg_list_to_blob(segs):
+    """Convert a list of seg labels into a network input.
+    """
+    max_shape = np.array([seg.shape for seg in segs]).max(axis=0)
+    num_images = len(segs)
+    blob = np.zeros((num_images, max_shape[0], max_shape[1]),
+                    dtype=np.float32)
+    for i in xrange(num_images):
+        seg = segs[i]
+        blob[i, 0:seg.shape[0], 0:seg.shape[1]] = seg
+
+    return blob
+
 def prep_im_for_blob(im, pixel_means, target_size, max_size):
     """Mean subtract and scale an image for use in a blob."""
 
@@ -50,3 +63,25 @@ def prep_im_for_blob(im, pixel_means, target_size, max_size):
                     interpolation=cv2.INTER_LINEAR)
 
     return im, im_scale
+
+
+def prep_im_seg_for_blob(im, seg_label, pixel_means, target_size, max_size):
+    """Mean subtract and scale an image for use in a blob."""
+
+    im = im.astype(np.float32, copy=False)
+    im -= pixel_means
+    # im = im[:, :, ::-1]
+    im_shape = im.shape
+    im_size_min = np.min(im_shape[0:2])
+    im_size_max = np.max(im_shape[0:2])
+    im_scale = float(target_size) / float(im_size_min)
+    # Prevent the biggest axis from being more than MAX_SIZE
+    # if np.round(im_scale * im_size_max) > max_size:
+    #     im_scale = float(max_size) / float(im_size_max)
+    # im = imresize(im, im_scale)
+    im = cv2.resize(im, None, None, fx=im_scale, fy=im_scale,
+                    interpolation=cv2.INTER_LINEAR)
+    seg_label = cv2.resize(seg_label, None, None, fx=im_scale, fy=im_scale,
+                    interpolation=cv2.INTER_NEAREST)
+
+    return im, seg_label, im_scale

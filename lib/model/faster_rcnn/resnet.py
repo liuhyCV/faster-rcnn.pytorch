@@ -3,7 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 from model.utils.config import cfg
-from model.faster_rcnn.faster_rcnn import _fasterRCNN
+from model.faster_rcnn.faster_rcnn import _fasterRCNN, _fasterRCNN_seg
 
 import torch
 import torch.nn as nn
@@ -100,6 +100,40 @@ class Bottleneck(nn.Module):
     out = self.relu(out)
 
     return out
+
+
+class Classifier_Module(nn.Module):
+
+  def __init__(self, dilation_series, padding_series, NoLabels):
+    super(Classifier_Module, self).__init__()
+    self.conv2d_list = nn.ModuleList()
+    for dilation,padding in zip(dilation_series, padding_series):
+        self.conv2d_list.append(nn.Conv2d(2048, NoLabels, kernel_size=3, stride=1, padding=padding, dilation = dilation, bias = True))
+
+    for m in self.conv2d_list:
+        m.weight.data.normal_(0, 0.01)
+
+  def forward(self, x):
+    out = self.conv2d_list[0](x)
+    for i in range(len(self.conv2d_list)-1):
+        out += self.conv2d_list[i+1](x)
+    return out
+
+
+class merge_seg_result(nn.Module):
+
+    def __init__(self):
+      super(merge_seg_result, self).__init__()
+
+
+    def forward(self, input_base_feat, input_seg_pred):
+
+      input_size_h = input_base_feat.size()[2]
+      input_size_w = input_base_feat.size()[3]
+
+      interp = nn.UpsamplingBilinear2d(size=(input_size_h, input_size_w))
+
+      return torch.cat(input_base_feat, interp(input_seg_pred))
 
 
 class ResNet(nn.Module):
@@ -265,6 +299,89 @@ class resnet(_fasterRCNN):
 
     self.RCNN_base.apply(set_bn_fix)
     self.RCNN_top.apply(set_bn_fix)
+
+  def train(self, mode=True):
+    # Override train so that the training mode is set as we want
+    nn.Module.train(self, mode)
+    if mode:
+      # Set fixed blocks to be in eval mode
+      self.RCNN_base.eval()
+      self.RCNN_base[5].train()
+      self.RCNN_base[6].train()
+
+      def set_bn_eval(m):
+        classname = m.__class__.__name__
+        if classname.find('BatchNorm') != -1:
+          m.eval()
+
+      self.RCNN_base.apply(set_bn_eval)
+      self.RCNN_top.apply(set_bn_eval)
+
+  def _head_to_tail(self, pool5):
+    fc7 = self.RCNN_top(pool5).mean(3).mean(2)
+    return fc7
+
+
+class resnet_seg(_fasterRCNN_seg):
+  def __init__(self, classes, num_layers=101, pretrained=False, class_agnostic=False):
+    self.model_path = 'data/pretrained_model/resnet101_caffe.pth'
+    self.dout_base_model = 1024
+    self.pretrained = pretrained
+    self.class_agnostic = class_agnostic
+
+    _fasterRCNN.__init__(self, classes, class_agnostic)
+
+  def _init_modules(self):
+    resnet = resnet101()
+
+    if self.pretrained == True:
+      print("Loading pretrained weights from %s" %(self.model_path))
+      state_dict = torch.load(self.model_path)
+      resnet.load_state_dict({k:v for k,v in state_dict.items() if k in resnet.state_dict()})
+
+    # Build resnet.
+    self.RCNN_base = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu,
+      resnet.maxpool,resnet.layer1,resnet.layer2, resnet.layer3)
+
+    self.seg_brantch = self._make_pred_layer(Classifier_Module, [6, 12, 18, 24], [6, 12, 18, 24], classes)
+
+    self.seg_feat_merge = merge_seg_result()
+
+    self.RCNN_top = nn.Sequential(resnet.layer4)
+
+    self.RCNN_cls_score = nn.Linear(2048, self.n_classes)
+    if self.class_agnostic:
+      self.RCNN_bbox_pred = nn.Linear(2048, 4)
+    else:
+      self.RCNN_bbox_pred = nn.Linear(2048, 4 * self.n_classes)
+
+    # Fix blocks
+    for p in self.RCNN_base[0].parameters(): p.requires_grad=False
+    for p in self.RCNN_base[1].parameters(): p.requires_grad=False
+
+    assert (0 <= cfg.RESNET.FIXED_BLOCKS < 4)
+    if cfg.RESNET.FIXED_BLOCKS >= 3:
+      for p in self.RCNN_base[6].parameters(): p.requires_grad=False
+    if cfg.RESNET.FIXED_BLOCKS >= 2:
+      for p in self.RCNN_base[5].parameters(): p.requires_grad=False
+    if cfg.RESNET.FIXED_BLOCKS >= 1:
+      for p in self.RCNN_base[4].parameters(): p.requires_grad=False
+
+    def set_bn_fix(m):
+      classname = m.__class__.__name__
+      if classname.find('BatchNorm') != -1:
+        for p in m.parameters(): p.requires_grad=False
+
+    self.RCNN_base.apply(set_bn_fix)
+    self.RCNN_top.apply(set_bn_fix)
+
+
+  def _make_pred_layer(self, block, dilation_series, padding_series, NoLabels):
+    return block(dilation_series, padding_series, NoLabels)
+
+  def _merge_seg_result(self, base_feat, seg_result):
+    # base_feat: self.RCNN_base(im_data) output,
+
 
   def train(self, mode=True):
     # Override train so that the training mode is set as we want
